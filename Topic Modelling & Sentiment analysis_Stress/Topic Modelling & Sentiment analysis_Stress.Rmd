@@ -1,0 +1,556 @@
+---
+title: 'H4: Final Project'
+author: "Lavrinenko Olga"
+date: "2023-03-28"
+output: html_document
+---
+
+Your final homework assignment will be a test of your skills in an independent project.
+**IMPORTANT** For any of these projects you have to specify the research goal of your work!!!
+**Deadline:** 27 March, 23:59 (UTC+3)
+Send your work **(.Rmd + .html files)** to `nikxianercom@gmail.com`, state your full name as the topic of your letter.
+
+# Var 1: Topic Modelling (Advanced: Sentiment analysis)
+
+```{r include = T, results = 'hide', warning = F, message = F}
+library(data.table)
+library(ggplot2)
+library(readr)
+library(tidylo)
+library(tidytext)
+library(tidyverse)
+library(dplyr)
+library(stm)
+library(stringr)
+library(stringi)
+library(stopwords)
+library(tm)
+library(tidyr)
+library(igraph)
+library(ggraph)
+library(lsa)
+library(textstem)
+library(quanteda)
+library(stringr)
+library(tidytext)
+library(lubridate)
+library(radarchart)
+```
+
+# Summary
+
+- **Goal of project** is to identify whether texts associated with stress differ from texts in which the stress is not identified, according to their vocabulary, topics and sentiments.
+
+- **About the dataset**: the dataset contains data posted on subreddits related to mental health. This dataset contains various mental health problems shared by people about their life. This dataset is labelled as 0 and 1, where 0 indicates no stress and 1 indicates stress.
+
+- **Key findings**:
+
+1) There is a difference in the dictionary between the categories "stress" and "no stress": the same bigram can have noticeably different frequency in the categories.
+2) There are distinctive bigrams for each of the categories, which allow them to be characterized by meaning.
+3) There are topics such as "Abusive relationships", "Recovery and forward movement", "Professional psychological treatment", "Thinking about the problems and solutions", "Addictions and depression". 
+4) "Abusive relationships" and "Thinking about the problems and solutions" are associated with stress according to the evaluation of effects of covariates.
+5) "Recovery and forward movement" is associated to category "no stress".
+6) There is a difference between categories "stress" and "no stress" in sentiments. 
+7) The "stress" category tends to have more negative words, while the “no stress” category tends to have more positive words. 
+8) The most prevailing sentiments in the "stress" category are "anger", "anticipation", "fear" and "sadness". And in the "no stress" category, sentiments of trust and anticipation prevail. 
+
+
+**1. Find dataset on [Kaggle](https://www.kaggle.com/datasets) or other source**
+
+Data: Human Stress Prediction
+Source: https://www.kaggle.com/datasets/kreeshrajani/human-stress-prediction
+
+The dataset includes 2838 observations and 7 variables.
+
+```{r}
+setwd('D:/Data Analytics For Politics And Society/Text Mining and Natural Language Processing (3 modul)/HW')
+data_stress <- read.csv('stress.csv')
+dim(data_stress)
+names(data_stress)
+```
+
+**2. Look through the data. Describe the collection principles and distinguishing characteristics of the data. Do not forget to investigate variables types. Add summary statistics.**
+
+- subreddit: subreddit is a specific community or forum
+- post_id: unique_is
+- sentence_range: sentence index
+- text: text use for stress detection
+- label: 0 and 1 , 0 means no stress and 1 means stress
+- confidence: confidence level of person on text
+- social_timestamp: data and time in timestamp format
+
+Among these variables, we are only interested in "text" and "label". Classes of these variables are character for text and should be factor for "label", because label is just a category in format of number. 
+
+```{r}
+names(data_stress)
+class(data_stress$text)
+class(data_stress$label)
+data_stress$label <- as.factor(data_stress$label)
+```
+
+Next, we have 1350 observations which were labeled as no stress, and 1488 with a sign of stress. Average number of words in a document is almost the same for each of category - 89 for "no stress" and 83 for "stress". Maximum document length is 310 words and minimum is 1 word in a document.
+
+```{r}
+data_stress %>% group_by(label) %>% summarize(n = n())
+
+# Number of words per line 
+words_text <- str_split(data_stress$text, " ")
+words_per_line_text <- lapply(words_text, length)
+data_stress$length_text <- unlist(words_per_line_text)
+
+# Average number of words
+data_stress %>%
+  group_by(label)%>%
+  summarise(words_text = mean(length_text))%>%
+  arrange(-(words_text))
+
+summary(data_stress$length_text)
+
+data_stress$doc_id <- row_number(data_stress)
+```
+
+
+**3. Clean the data (minimal cleaning, stopwords, lemmatization / stemming, whether using TF-IDF or frequency). Explain your cleaning steps and how they will affect the analysis.**
+
+For the frequency review, I will work with bigrams, because they will give more information about the differences between the two categories.
+
+```{r}
+data_raw <- data_stress %>% 
+  unnest_tokens(bigram, text, token = "ngrams", n = 2)%>%
+  group_by(label)
+```
+
+Let's clean the data and remove stop words.
+
+```{r}
+data_cleaned <- data_raw %>% 
+  separate(bigram, c("word1", "word2"), sep = " ")
+
+data_cleaned <- subset(data_cleaned, str_length(word1)>3 & str_length(word2)>3)
+data_cleaned <- subset(data_cleaned, word1 != "https" & word2 != "https")
+data_cleaned <- subset(data_cleaned, word1 != "http" & word2 != "http")
+
+data_cleaned <-  data_cleaned %>%               
+  filter(
+    !word1 %in% stop_words$word,                 # remove stopwords from both words in bi-gram
+    !word2 %in% stop_words$word,
+    !str_detect(word1, pattern = "[[:digit:]]"), # remove any words with numeric digits
+    !str_detect(word2, pattern = "[[:digit:]]"),
+    !str_detect(word1, pattern = "[[:punct:]]"), # remove any remaining punctuation
+    !str_detect(word2, pattern = "[[:punct:]]"),
+    !str_detect(word1, pattern = "(.)\\1{2,}"),  # remove any words with 3 or more repeated letters
+    !str_detect(word2, pattern = "(.)\\1{2,}"),
+    !str_detect(word1, pattern = "\\b(.)\\b"),   # remove any remaining single letter words
+    !str_detect(word1, pattern = "\\b(.)\\b")
+    ) %>%
+  unite("bigram", c(word1, word2), sep = " ")
+```
+
+Next is lemmatization.
+
+```{r}
+library(textstem)
+bigram_lemma <- data_cleaned %>%
+   separate(bigram, c("word1", "word2"), sep = " ") %>%
+  mutate(lemma1 = lemmatize_words(word1), 
+         lemma2 = lemmatize_words(word2)) %>%
+  unite("bigram", c(lemma1, lemma2), sep = " ") 
+```
+
+And now let's have a look on frequency lists grouped by stress label. We can notice that there are some bigrams which are repeated in both categories, but they have different frequency, for instance, "mental health" prevails in the category marked as stress-free (n = 49), while "panic attack" prevails in a category "stress".  
+
+Also in the category where there is no stress, bigrams such as "feel free" and "fast forward" are common. And in the category with stress bigrams "anxiety attack", "abusive relationship" are quite frequent.
+
+```{r}
+bigram_lemma %>%
+  filter(label == 1)%>%
+  count(bigram) %>%
+  arrange(-n) %>%
+  head(15)
+
+bigram_lemma %>%
+  filter(label == 0)%>%
+  count(bigram) %>%
+  arrange(-n) %>%
+  head(15)
+```
+
+```{r}
+freqlist_stress <- bigram_lemma %>%
+    group_by(label)%>%
+    count(bigram, sort = T)%>%
+    slice(1:10)
+
+plot_stress <- freqlist_stress %>% 
+  filter(label == "1") %>%
+  mutate(bigram = fct_reorder(bigram, n)) %>%
+  
+  ggplot(aes(n, bigram))+
+    geom_col(fill = "#5E58A5") +
+    xlab("Frequency") +
+    ylab("Bigrams") +
+    ggtitle("Stress") +
+    theme_minimal()
+
+plot_nostress <- freqlist_stress %>% 
+  filter(label == "0") %>%
+  mutate(bigram = fct_reorder(bigram, n)) %>%
+  
+  ggplot(aes(n, bigram))+
+    geom_col(fill = "#F2B620") +
+    xlab("Frequency") +
+    ylab("Bigrams") +
+    ggtitle("No stress") +
+    theme_minimal()
+
+library(ggpubr)
+ggarrange(plot_stress, plot_nostress,
+          ncol = 2, nrow = 1)
+```
+
+But it is useful to look at unique bigrams for each of the category. To do this we have to use tf-idf metric and group by label. The higher the value of tf_idf, the more important the bigram for the category of stress (label).
+
+For label "0" - no stress, such bigrams as "survey item", "private message", "gift card", "consent form", "assess treatment", "background information" are the most meaningful in case they are not used in the second category. All these bigrams are associated with the implementation of some kind of treatment, maybe sessions with specialists
+
+For label "1" - stress, such bigrams as "health anxiety", "feel awful", "heart attack", "sexually assault", "chronic pain" are the most meaningful in case they are not used in the first category. And actually, all of them are really associated with mental or physical problems.
+
+```{r}
+data_tf_idf <- bigram_lemma %>%
+  count(label, bigram) %>%
+  bind_tf_idf(bigram, label, n)%>%
+  arrange(-tf_idf)
+
+data_tf_idf %>%
+  filter(label == 0) %>%
+  head(15)
+
+data_tf_idf %>%
+  filter(label == 1) %>%
+  head(15)
+```
+
+```{r}
+freqlist_stress <- data_tf_idf %>%
+    arrange(-tf_idf)%>%
+    group_by(label)%>%
+    slice(1:10)
+
+plot_stress <- freqlist_stress %>% 
+  filter(label == "1") %>%
+  mutate(bigram = fct_reorder(bigram, n)) %>%
+  
+  ggplot(aes(n, bigram))+
+    geom_col(fill = "#5E58A5") +
+    xlab("Frequency") +
+    ylab("Unique Bigrams") +
+    ggtitle("Stress") +
+    theme_minimal()
+
+plot_nostress <- freqlist_stress %>% 
+  filter(label == "0") %>%
+  mutate(bigram = fct_reorder(bigram, n)) %>%
+  
+  ggplot(aes(n, bigram))+
+    geom_col(fill = "#F2B620") +
+    xlab("Frequency") +
+    ylab("Unique Bigrams") +
+    ggtitle("No stress") +
+    theme_minimal()
+
+library(ggpubr)
+ggarrange(plot_stress, plot_nostress,
+          ncol = 2, nrow = 1)
+```
+
+**4. Choose STM or LDA to perform the topic modelling. Describe why you choose it for the analysis.**
+
+I have chosen the STM because it allows me to evaluate whether a topic belongs to a category (in my case, the categories are stress and no stress) through the generation of a regression table. That is, my interest is not only to identify topics, but also to identify which of them belong to the category of stress, and which are not related to stress. I also will continue to work with bi-grams, because to my mind, they can help to extract well-established expressions and understand each topic better.
+
+```{r}
+data_stress_dfm <- bigram_lemma %>%
+    count(doc_id, bigram) %>%
+    cast_dfm(doc_id, bigram, n) %>%
+    dfm_wordstem(language = "en")
+
+data_stress_meta <- data_stress %>%
+    filter(doc_id %in% rownames(data_stress_dfm))
+
+data_stress_meta <- data_stress_meta[c('doc_id', 'label', 'text')]
+docvars(data_stress_dfm) <- data_stress_meta
+
+stress_stm <- stm(data_stress_dfm, K = 6, prevalence = ~ label,
+                     max.em.its = 5, data = data_stress_meta,
+                     init.type = "Spectral")
+```
+
+**Estimate Effects of Covariates**
+
+I got 6 topics: some of them have significant p-value, so we can speak about association of those topics with one of the categories.
+
+So, topic 2 has significant p-value (<0.05) and positive estimate (0.078), so it is more associated with category "stress" then with category "no stress". In this case "no stress" is a referent category.
+
+Then, topic 3 has significant p-value (<0.05) and negative estimate (-0.124), so it is more associated not with category "stress" but with category "no stress".
+
+And finally, topic 5 has significant p-value (<0.05) and positive estimate (0.052), so it is more associated with category "stress" then with category "no stress".
+
+Topic 1, 4 and topic 6 do not have significant p-values.
+
+```{r}
+stress_stm_effect <- estimateEffect(formula = 1:6 ~ label,
+                                       stmobj = stress_stm,
+                                       metadata = data_stress_meta, uncertainty = "None")
+summary(stress_stm_effect)
+```
+
+**5. Inspect the TOP-10 words for each topic and guess what they are about**
+
+Topic 1: In this topic, words and phrases, in my opinion, differ quite strongly from each other in direction, there are problems with finances ("bank account", " benefit money"), and with abusive relationships ("abusive relationship", "sexual abus"), and with career difficulties ("company interest", "experience polit").
+
+Topic 2: To my mind, the phrases in this topic most of all belong to abusive relationships, family problems, sexual harassment: "abusive relationship", "domestic viol", "sexual abus", "brother heroin", "heroin addict", "molest multipl", "relationship fast", "burdensome char". And this topic, according to the analysis from the last part, is really related to stress.
+
+Topic 3: Although there are also some phrases associated with difficulties and serious problems, in general, many words are already lighter and more positive, not gloomy and depressing. And they are already associated with solving problems, moving forward, restoring oneself: "Move forward", "family hom", "feel fre", "free tim", "return hom", "greatly appreci", "fall asleep", "real lif". It should be noted that this particular topic, according to the results of the analysis, was previously more associated with the absence of stress.
+
+Topic 4: despite the fact that the words are quite differentiated, it seems to me that in this topic they are more related to professional psychological treatment or counseling ("psychology depart", "adult seek", "assess treat", "therapy sess", "department research", "information respond", "conversion therapi")
+
+Topic 5: words are associated with psychological well-being, but here, it seems to me, there are many phrases that show attempts to cope with problems and find a solution to one's difficulties ("spend time", "stop cri", "feel comfort", "stop think", "life anymor", "insect memori", "start liv", "enjoy lif")
+
+Topic 6: to my mind, words are associated with various psychological problems, but there are quite a few phrases about addictions, sleep disorders, depression, financial problems ("throw shit", "relieve depress", "remain hop", "doze flip", "suicide rel" etc)
+
+```{r}
+labelTopics(stress_stm, n = 6)
+
+plot(stress_stm, type = "summary", n = 4, text.cex = 0.8)
+```
+
+**6. Name the topic and explain why you name it in a certain way**
+
+I have labeled the titles of the topics according to the most likely words, as well as according to the words that received the highest rating, the score for each of the topics. And I also tried above to compare the topic with its meaning.
+
+-Topic 1: Social security
+-Topic 2: Abusive relationships
+-Topic 3: Recovery and forward movement
+-Topic 4: Professional psychological treatment
+-Topic 5: Thinking about the problems and solutions
+-Topic 6: Addictions and depression
+
+```{r}
+stress_filtered <- data_stress %>%
+    filter(doc_id %in% rownames(data_stress_dfm))
+
+social_security <- findThoughts(stress_stm, texts = stress_filtered$text, n = 3, topics = 1)$docs[[1]]
+plotQuote(social_security, width = 100, main = "Social security", text.cex = 0.8)
+```
+
+```{r}
+abusive_relationships <- findThoughts(stress_stm, texts = stress_filtered$text, n = 3, topics = 2)$docs[[1]]
+plotQuote(abusive_relationships, width = 100, main = "Abusive relationships", text.cex = 0.7)
+```
+
+```{r}
+recovery <- findThoughts(stress_stm, texts = stress_filtered$text, n = 3, topics = 3)$docs[[1]]
+plotQuote(recovery, width = 100, main = "Recovery and forward movement", text.cex = 0.7)
+```
+
+```{r}
+treatment <- findThoughts(stress_stm, texts = stress_filtered$text, n = 3, topics = 4)$docs[[1]]
+plotQuote(treatment, width = 100, main = "Professional psychological treatment", text.cex = 0.7)
+```
+
+```{r}
+solution <- findThoughts(stress_stm, texts = stress_filtered$text, n = 3, topics = 5)$docs[[1]]
+plotQuote(solution, width = 100, main = "Thinking about the problems and solutions", text.cex = 0.7)
+```
+
+```{r}
+Addictions_and_depression <- findThoughts(stress_stm, texts = stress_filtered$text, n = 3, topics = 6)$docs[[1]]
+plotQuote(Addictions_and_depression, width = 100, main = "Addictions and depression", text.cex = 0.7)
+```
+
+
+**7. Write a meaningful conclusion about the topics that are present in the dataset*.**
+
+In general, five topics could be identified in a certain way, one of the topics (the first) consists of phrases of various kinds and therefore it is difficult to determine its name. 
+
+So, there are topics such as "Abusive relationships", "Recovery and forward movement", "Professional psychological treatment", "Thinking about the problems and solutions", "Addictions and depression". Moreover, "Abusive relationships" and "Thinking about the problems and solutions" are associated with stress according to the evaluation of effects of covariates, while "Recovery and forward movement" is associated to category "no stress".
+
+This can be hypothetically explained by the fact that the third category includes more positive phrases that do not indicate stress, while the other two categories consist mainly of negative phrases that may be signs of stress.There is no significant p-value for other topics, possibly because although they have negative phrases, they are not associated with stress, but with other psychological or physical diseases.
+
+## **Advanced task**
+
+In addition to the topic modeling you need to perform the sentiment analysis. Please, think about a story you want to tell there, what is your goal, what do you expect to see.
+
+In general, I'm interested in doing a sentiment analysis in terms of the presence or absence of stress. To find out what is the ratio of positive and negative words in these two categories, to identify which sentiments are most characteristic of the categories according to the frequency of words. This will help to distinguish between words and sentiments that can signal whether or not a person is stressed.
+
+Since dictionaries are made up of single words, I will work with tokens and start by clearing the original database
+
+```{r}
+data_stress$text <- str_to_lower(data_stress$text)
+data_stress$text <- gsub("[[:digit:]]", "", data_stress$text)
+data_stress$text <- gsub("[[:punct:]]", "", data_stress$text)
+```
+
+Next let's tokenize texts by words, lemmatize them and remove stopwords. 
+
+```{r warning = F}
+data_stress$label <- ifelse(data_stress$label == "1", "stress", "no stress")
+data_tok <- data_stress %>%
+  unnest_tokens(word, text) %>%
+  mutate(lemma = lemmatize_words(word)) %>%
+  anti_join(stop_words, by = c("lemma" = "word"))
+```
+
+**8. Choose dictionary / dictionaries for your dataset. Provide explanation of your choice.**
+
+I chose these two dictionaries because one of them (bing) will help evaluate the words in the categories in terms of negative and positive, and the other (nrc) will reveal other sentiments that I might have come across before, for example, guilt or anger.
+
+```{r}
+bing <- get_sentiments("bing")
+nrc <- get_sentiments("nrc")
+```
+
+
+**9. Compare the sentiment in different categories (for instance, by average sentiment score) and / or compare the sentiments of frequent words in each category. Create at least 3 different visualizations to illustrate your findings.**
+
+**9.1 Most common positive and negative words**
+
+As we can see, negative words are more common than positive ones among the entire text corpus: top-10 negative words have frequent from 100 to 250 times, and two words ("anxiety", "bad") are extremely frequent - more than 350 times.
+
+At the same time top-10 positive words have frequent from 50 to 150 times, and one word ("love") has the highes frequent in category "positive" - almost 300 times (297).
+
+```{r, message = F, warning = F }
+bing_word_counts <- data_tok %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(lemma, sentiment, sort = TRUE) %>%
+  ungroup()
+
+bing_word_counts %>% head (10)
+
+bing_word_counts %>%
+  group_by(sentiment) %>%
+  slice_max(n, n = 10) %>% 
+  ungroup() %>%
+  mutate(word = reorder(lemma, n)) %>%
+  ggplot(aes(n, word, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(x = "\nContribution to sentiment",
+       y = NULL) +
+  scale_fill_manual(values=c("#483D8B", "#FFA603"))+
+  theme_minimal()
+```
+
+**9.2 The number of negative and positive words by label**
+
+Category "no stress" includes 2959 negative words and 4327 positive words, while category "stress" includes 5862 negative words and 4010 positive ones. 
+
+If we look at the percentage of negative and positive words for each of the categories, then for "no stress" it is 40,6% against 59,4% (negative and positive), while for the stress category it is vice versa, it is equal to 59, 4% (negative) vs 40,6% (positive). Thus, the stress category tends to have more negative words, while the “no stress” category tends to have more positive words.
+
+```{r, warning = F, message = F}
+s_nrc2 <- data_tok %>%
+  inner_join(nrc) %>% 
+  filter(grepl("positive|negative", sentiment)) %>% 
+  count(label, sentiment)
+s_nrc2
+
+
+s_nrc2 %>%
+  group_by(label) %>% 
+  mutate(percent_positive = 100 * n / sum(n)) %>% 
+  ggplot(aes(label, percent_positive, fill = sentiment)) +  
+  geom_col()+
+  scale_fill_manual(values=c("#483D8B", "#FFA603"))+
+  xlab("Label of stress")+
+  ylab("Percentage\n")+
+  scale_y_continuous(breaks = seq(0, 100, by = 20))
+```
+
+**9.3 Percentage of different sentiments by label**
+
+And now we can look at the categorization of the number of different sentiments. For the category of stress in relation to the category "no stress", such sentiments as "anger" (approximately 8% vs 4,5%), "disgust" (approximately 5% vs 2,9%), "fear" (9% vs 5,4%), "sadness" (approximately 9% vs 5%) prevail.
+
+Sentiments like "anticipation" (7,3%) and "surprise" (3%) are about the same in both categories. And such sentiments as "joy" (approximately 5,5% for "no stress" vs 4,5% for "stress") and "trust" (approximately 7,5% vs 6,8%) are a little more in the category "no stress".
+
+```{r, warning = F, message = F}
+data_sent <- data_tok %>%
+  group_by(label) %>%
+  mutate(n_words = n()) %>%
+  left_join(get_sentiments("nrc")) %>%
+  mutate(label = factor(label),
+         sentiment = factor(sentiment))
+
+data_sent <- data_sent %>%
+  group_by(label, sentiment) %>%
+  summarise(sentiment = unique(sentiment),
+                   sentiment_freq = n(),
+                   n_words = unique(n_words)) %>%
+  filter(is.na(sentiment) == F) %>%
+  mutate(percentage = round(sentiment_freq/n_words*100, 1))
+
+data_sent %>%
+  filter(sentiment != "positive",
+         sentiment != "negative") %>%
+  ggplot(aes(sentiment, percentage, fill = label)) +    
+  geom_bar(stat="identity",   
+           position=position_dodge()) + 
+  scale_fill_manual(name = "", values=c("#FFC97D", "#483D8B")) +
+  theme_bw() +
+  theme(legend.position = "top")+
+  xlab("\nSentiment")+
+  ylab("Percentage\n")+
+  scale_y_continuous(breaks = seq(0, 10, by = 1))
+```
+**9.4 Sentiment scale from anger to joy according to label**
+
+This graph reflects almost the same information as the previous one. That is, we can see the predominance of red bars (negative sentiments) in the category "stress". At the same time, for the “no stress” category, there is a shift in favor of blue bars (positive sentiment).
+
+```{r}
+data_sent %>%
+  filter(sentiment != "positive",
+         sentiment != "negative") %>%
+  mutate(sentiment = factor(sentiment, 
+                            levels = c("anger", "fear", "disgust", "sadness",
+                                   "surprise", "anticipation", "trust", "joy"))) %>%
+  ggplot(aes(label, percentage, fill = sentiment)) +    
+  geom_bar(stat="identity", position=position_dodge()) + 
+  scale_fill_brewer(palette = "RdBu") +
+  theme_bw() +
+  theme(legend.position = "right") +
+  coord_flip()+
+  ylab("Percentage\n")+
+  xlab("\nLabel of stress")
+```
+**9.5 Visualization of sentiments for category "stress"**
+
+Radars show the distribution of sentiment for each category. So the most prevailing sentiments in the stress category are anger, anticipation, fear and sadness. And in the "no stress" category, sentiments of trust and anticipation prevail.
+
+```{r, warning = F}
+stress = data_tok %>% filter(label == "stress")
+
+scores <- stress %>% 
+  inner_join(nrc, by = c("lemma" = "word")) %>% 
+  filter(!grepl("positive|negative", sentiment)) %>% 
+  count(label, sentiment) %>% 
+  spread(label, n)
+
+chartJSRadar(scores)
+```
+
+```{r}
+stress = data_tok %>% filter(label == "no stress")
+
+scores <- stress %>% 
+  inner_join(nrc, by = c("lemma" = "word")) %>% 
+  filter(!grepl("positive|negative", sentiment)) %>% 
+  count(label, sentiment) %>% 
+  spread(label, n)
+
+chartJSRadar(scores)
+```
+
+
+**10. Create a meaningful conclusion about sentiments between categories**
+
+To sum up, there is the difference between categories "stress" and "no stress" in sentiments. Firstly, the "stress" category tends to have more negative words, while the “no stress” category tends to have more positive words. Secondly, the most prevailing sentiments in the "stress" category are "anger", "anticipation", "fear" and "sadness". And in the "no stress" category, sentiments of trust and anticipation prevail. 
+
+This can be explained by the fact that the presence of stress can indeed manifest itself in anger, fear, sadness, a person under stress can express just such emotions. At the same time, a person who is not under stress can also experience these feelings, but most likely to a lesser extent than a person in stress. He or she is likely to have more positive sentiments and most likely they will be expressed during a conversation, since bad emotions, if any, may not greatly depress him, at least not as much as a person experiencing stress.
+
