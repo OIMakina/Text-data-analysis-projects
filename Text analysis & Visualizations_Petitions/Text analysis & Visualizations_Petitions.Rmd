@@ -1,0 +1,660 @@
+---
+title: "H3: Wrap up & Visualizations"
+author: "Lavrinenko Olga"
+date: "2023-03-15"
+output: html_document
+---
+
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r include = T, results = 'hide', warning = F, message = F}
+library(data.table)
+library(ggplot2)
+library(readr)
+library(tidylo)
+library(tidytext)
+library(tidyverse)
+library(dplyr)
+library(stm)
+library(stringr)
+library(stringi)
+library(stopwords)
+library(tm)
+library(tidyr)
+library(igraph)
+library(ggraph)
+library(lsa)
+```
+
+**Advanced task (to get 9-10)**
+If you do an advanced task, do not analyze the whole dataset, but compare the subsets by petition_status, i.e. create separate subsets by petition_status and analyze each of them. Compare the SABSET RESULTS obtained by different visualizations and draw meaningful conclusions.
+
+**Deadline:** 15st March, 23:59 (UTC+3)
+Send your work **(.Rmd + .html files)** to `nikxianercom@gmail.com`, state your full name as the topic of your letter.
+
+```{r}
+setwd("D:/Data Analytics For Politics And Society/Text Mining and Natural Language Processing (3 modul)/HW")
+data <-  read_csv("h3_petition.csv")
+
+# for advanced
+unique(data$petition_status)
+data %>% group_by(petition_status) %>% summarize(n = n())
+
+# adding doc_id to the dataset
+data$doc_id <- row_number(data)
+```
+
+
+**1. Create bi-grams on the dataset**
+
+I am going to work with the full dataset, but interpret it separately by the petition status, comparing the results with each other
+
+```{r}
+bigrams_raw <- data %>% 
+  ungroup() %>% 
+  unnest_tokens(bigram, description, token = "ngrams", n = 2)%>%
+  group_by(petition_status)
+```
+
+**For petition statuses**: at this part our bi-grams, regardless of the petition status, consist of stop words, individual letters and do not have a specific meaning for interpretation and comparison. 
+
+```{r}
+bigrams_raw %>% 
+  filter(petition_status == "active") %>%
+  count(bigram, sort=TRUE)%>% 
+  head(10)
+
+bigrams_raw %>% 
+  filter(petition_status == "victory") %>%
+  count(bigram, sort=TRUE)%>% 
+  head(10)
+```
+
+
+**2. Do preprocessing steps (minimal cleaning, delete stop words, lemmatization)**
+
+-*It is important to understand that coocurences visualization is done based on udpipe package, so if you want, you can do lemmatization with text_stem package and then udpipe separately, or you can do udpipe at once. Both methods are fine)
+
+**2.1. Cleaning, deleting stop words**
+
+At this stage, we divide bi-grams into separate words, remove those words that consist of less than 3 letters; that are stop words, numbers; words, which contain punctuation marks, etc.
+
+```{r}
+bigram_cleaned <- bigrams_raw %>% 
+  separate(bigram, c("word1", "word2"), sep = " ")
+
+bigram_cleaned <- subset(bigram_cleaned, str_length(word1)>3 & str_length(word2)>3)
+bigram_cleaned <- subset(bigram_cleaned, word1 != "https" & word2 != "https")
+bigram_cleaned <- subset(bigram_cleaned, word1 != "http" & word2 != "http")
+
+bigram_cleaned <-  bigram_cleaned %>%               
+  filter(
+    !word1 %in% stop_words$word,                 # remove stopwords from both words in bi-gram
+    !word2 %in% stop_words$word,
+    !str_detect(word1, pattern = "[[:digit:]]"), # remove any words with numeric digits
+    !str_detect(word2, pattern = "[[:digit:]]"),
+    !str_detect(word1, pattern = "[[:punct:]]"), # remove any remaining punctuations
+    !str_detect(word2, pattern = "[[:punct:]]"),
+    !str_detect(word1, pattern = "(.)\\1{2,}"),  # remove any words with 3 or more repeated letters
+    !str_detect(word2, pattern = "(.)\\1{2,}"),
+    !str_detect(word1, pattern = "\\b(.)\\b"),   # remove any remaining single letter words
+    !str_detect(word1, pattern = "\\b(.)\\b")
+    ) %>%
+  unite("bigram", c(word1, word2), sep = " ")
+```
+
+**2.2. Lemmatization (textstem).**
+
+```{r}
+library(textstem)
+bigram_lemma <- bigram_cleaned %>%
+   separate(bigram, c("word1", "word2"), sep = " ") %>%
+  mutate(lemma1 = lemmatize_words(word1), 
+         lemma2 = lemmatize_words(word2)) %>%
+  unite("bigram", c(lemma1, lemma2), sep = " ") 
+```
+
+**2.3. Frequency lists for "active" and "victory" petition statuses separately.**
+
+Now we can already see the most frequent bi-grams for different petition statuses. So, the most frequent bi-grams for "active" petition status are "mental health" (25), "canara bank"	(18), "steel plant"	(13), "board exam" (12), while for "victory" petition status we get such the most frequent bi-grams as "stray dog"	(20), "board exam" (19), "district hospital"	(13), "priyanka reddy"	(12), "entrance exam"	(11), "healthcare worker" (11) etc.
+
+```{r}
+bigram_lemma %>%
+  filter(petition_status=="active")%>%
+  count(bigram) %>%
+  arrange(-n) %>%
+  head(15)
+
+bigram_lemma %>%
+  filter(petition_status=="victory")%>%
+  count(bigram) %>%
+  arrange(-n) %>%
+  head(15)
+```
+
+**3. Create a freq.list with tf_idf and describe what happens there**
+
+```{r}
+data_tf_idf <- bigram_lemma %>%
+  count(doc_id, bigram) %>%
+  bind_tf_idf(bigram, doc_id, n)%>%
+  arrange(-tf_idf)
+```
+
+The higher the value of tf_idf, the more important the bi-gram for the document (doc_id).
+
+It can be seen that the largest tf-idf was received by those words that are unique, meaningful in the context of the document. So, for "active" petition status the following bi-grams have the highest tf_idf: "modern medicine" (0.98), 
+"steel plant" (0.86), "canara bank"	(0.74), "bed hospital" (0.71), etc.
+
+And for "victory" petition status such bi-grams as "stray dog" (1.68), "attack survivor" (0.87), "acid attack" (0.76), again	"stray dog"	(0.66), "healthcare worker" (0.58) have the highest tf_idf. The repetition of bi-grams (for instance, "stray dog") is due to grouping by doc_id, because bi-grams are repeated many times in several documents (for example doc №156 and doc №157).
+
+```{r}
+data_tf_idf %>%
+  filter(petition_status=="active", n>=5) %>%
+  arrange(-tf_idf) %>%
+  head(10)
+
+data_tf_idf %>%
+  filter(petition_status=="victory", n>=5) %>%
+  arrange(-tf_idf)%>%
+  head(10)
+```
+
+**4.  Compare it to the regular frequency list. Describe the difference, why tf_idf is useful, what it does in this particular corpus of text**
+
+A bigram may have a lower frequency (n), but its tf_idf may be higher than a bigram, which has a higher frequency (n). We can take as an example "modern medicine" and "canara bank" from table for "active" petition status. "Modern medicine" has much lower frequency than "canara bank" (6 Vs 18), but it has a higher tf_idf. This is because tf_idf normalizes frequencies based on both the length of the document, the bigram frequency, and the number of documents in general.
+
+Thus, tf_idf gives importance to any term that occurs frequently in a particular document but **not in many documents** in a corpus. If a bi-gram occurs frequently in a particular document but not in many documents, it probably accurately describes the content of that document.
+
+
+**5. Visualization: Wordclouds**
+
+**5.1. create wordclouds (use unigrams with tf_idf)**
+* for advanced: create comparative wordclouds for "victory" and "active" (lab9).
+
+Since we need to work with unigrams, let's go back to the original dataset (data), clean it up, create tokens and lemmatize them.
+
+```{r}
+# switch to lowercase
+data$description <- str_to_lower(data$description)
+
+# get rid of the numbers
+data$description <- gsub("[[:digit:]]", "", data$description)
+
+# remove punctuation
+data$description <- gsub("[[:punct:]]", "", data$description)
+
+# remove stop words
+data <- data %>%
+  unnest_tokens(word, description) %>%
+  anti_join(stop_words, by = "word")
+
+#remove very short tokens
+data <- subset(data, str_length(word)>3)
+
+# lemmatization
+data <- data %>%
+  mutate(lemma = lemmatize_words(word))
+```
+
+Next, since we need tf-idf for the assignment, let's create a table with this metric. I will not group by doc_id to avoid excessive repetition of the same significant words in different documents. I will leave the grouping only by status (this way we will have two categories - active and victory petition statuses)
+
+```{r}
+data_tf_idf_unigram <- data %>%
+  count(lemma, petition_status) %>%
+  bind_tf_idf(lemma, petition_status, n) %>%
+  arrange(-tf_idf)
+```
+
+Now we can see which lemmas got the highest tf-idf for each of the petition statuses.
+So, "plastic", "migraine", "canara", "wear", "builder" etc. are lemmas, that have the highest tf_idf in corpus of "active" petition status. And "airport", "senapati", "truenat" have the highest tf_idf in corpus of "victory" petition status.
+
+If we look at the end of the overall table, we will see that the most popular words that occur in both corpora - in active and in victory petition statuses, received tf_idf 0. This is because idf is equal to zero: Log(number of documents(2)/number of documents containing the word(2)) = log(2/2) = log(1) = 0. Thus, the significance of widely used (used in both corps) words decreases.
+
+In general, we can build a word cloud based on this table, but I don't want to completely remove important commonly used words, so I modify the idf calculation. 
+
+```{r}
+data_tf_idf_unigram %>%
+  filter(petition_status == "active")%>% head(10)
+
+data_tf_idf_unigram %>%
+  filter(petition_status == "victory")%>% head(10)
+
+data_tf_idf_unigram %>% arrange(-n)%>% head(10)
+```
+
+I found several options how idf can be calculated (https://datascience.stackexchange.com/questions/74210/what-is-the-formula-and-log-base-for-idf):
+
+0) By default: Log(number of documents/number of documents containing the word)
+1) Log((1+number of documents)/(1+number of documents containing the word))
+2) 1+Log(number of documents/number of documents containing the word)
+3) 1+Log((1+number of documents)/(1+number of documents containing the word))
+
+As our idf has already calculated, so I just add 1 (the second approach). And after that I manually calculate tf_idf through multiplication.
+
+```{r}
+data_tf_idf_unigram_2 <- data_tf_idf_unigram[, c("lemma", "petition_status", "n", "tf", "idf")]
+data_tf_idf_unigram_2$idf <- data_tf_idf_unigram_2$idf + 1
+data_tf_idf_unigram_2$tf_idf <- data_tf_idf_unigram_2$tf * data_tf_idf_unigram_2$idf 
+
+data_tf_idf_unigram_2 <- data_tf_idf_unigram_2 %>%
+  arrange(-tf_idf)
+```
+
+Now we don't have tf_idf which are equal to 0 and we keep words that are repeated in both categories (for instance, women).
+
+```{r}
+data_tf_idf_unigram_2 %>%
+  filter(petition_status == "active")%>% head(10)
+
+data_tf_idf_unigram_2 %>%
+  filter(petition_status == "victory")%>% head(10)
+```
+
+
+Next, let's create a matrix for the word cloud.
+
+```{r}
+data_wordcloud <- data_tf_idf_unigram_2 %>%
+  spread(petition_status, tf_idf) %>%                             
+  replace_na(list('active' = 0,
+                  'victory' = 0))%>%
+  select(lemma, active, victory)
+
+data_wordcloud_matrix <- data_wordcloud %>%
+  select(- lemma) %>%
+  as.matrix()
+
+row.names(data_wordcloud_matrix) <- data_wordcloud$lemma
+```
+
+**5.2. describe what results we can draw from wordclouds**
+
+The resulting word cloud renders our last table with the tf_idf metric, divides the words into two categories according to the status of the petition, and gives the words that have the most weight in the corpus a larger size.
+
+Looking at the word cloud, we see that the most significant words for active petition status are "woman", "people", "animal" while for "victory" petition status the most significant words are "student", "exam", "government". We can also notice that some words are significant in both categories, but the degree of significance differs: for instance, "woman" is more important in "active" corpus, than in "victory", but "student" is more important in "victory" corpus.
+
+**5.3. describe the role of the wordcloud at this stage of the analysis.**
+Thus, the word cloud allows us to compare the importance of words in two categories, and this is a more convenient and visual way than comparing in two tables.
+
+```{r}
+library(wordcloud)
+comparison.cloud(data_wordcloud_matrix,
+                 max.words = 50,
+                 colors = c("#018046", "#000080"),
+                 title.size = 2,
+                 title.bg.colors = "#FFEFE2")
+```
+
+
+**6. Visualization: Graph**
+
+**6.1. Consider which metric is best to use in bigrams (hint: choose between two). Explain the pros and cons of this metric**
+
+We have already have tables with tf_idf metric, so we have left four metrics - wpm/ipm, pmi, log-likelyhood ratio and log odds ratio. But last two metrics works only with support metric (WPM/IPM). So let's use WPM/IPM in bigrams. 
+
+Pros: this metric normalizes frequency by taking into account the corpus length, because the usual frequency can distort the idea of the importance of words. So the metric is used to compare corpora by ‘clean’ frequencies. 
+
+Cons: only the length of the corps is taken into account, i.e. only one parameter for normalization. For instance, compared to this metric, tf_idf is based on a larger number of parameters - including the number of documents. In addition, only two сorps are compared in WPM/IPM - focus and reference ones.
+
+**6.2. Create dataset with metric on bigrams (remember you must have three columns before you turn this dataset into a graph)**
+
+Based on this dataset "canara	bank"	(17.3), "steel plant"	(12.7), "vizag steel"	(9.1), "public toilet" (7.3) etc. are more frequent in focus corpus (active states) than in reference one (victory status) because they have the highest ratio. At the same time, "truenat	machine"	(0.1), "healthcare worker" (0.08), "senapati district" (0.08), "district hospital" (0.07) are the less frequent bi-grams in focus corpus (active status). 
+
+```{r}
+bigram_act <- subset(bigram_lemma, petition_status == "active") #focus corpus
+bigram_vic <- subset(bigram_lemma, petition_status == "victory")
+
+fc_freq <- bigram_act %>%
+  count(bigram, name = "fc_freq")
+
+rc_freq <- bigram_vic %>%
+  count(bigram, name = "rc_freq")
+
+joined_data <- full_join(fc_freq, rc_freq, by = "bigram") %>%
+  mutate(fc_freq = ifelse(is.na(fc_freq), 0, fc_freq),
+         rc_freq = ifelse(is.na(rc_freq), 0, rc_freq))
+
+joined_data_2 <- joined_data %>%
+  mutate(fc_freq = fc_freq + 1,
+         rc_freq = rc_freq + 1,
+         fc_wpm = fc_freq / sum(fc_freq) * 1000,
+         rc_wpm = rc_freq / sum(rc_freq) * 1000,
+         ratio = fc_wpm / rc_wpm) %>%
+  arrange(-ratio)%>%
+  separate(bigram, c("word1", "word2"), sep = " ")%>%
+  select(word1, word2, ratio)
+
+head(joined_data_2, 10)
+tail(joined_data_2, 10)
+```
+
+**6.3. Look at dataset with this metric and write why graph visualization will NOT work on this metric:) You can build a graph to be more sure of this, but it is not necessary (related to the peculiarities of the graph as a visualization)**
+
+Generally, we have three variables for the graph: 
+
+- from: from which "node" (word) the link starts - **word1**
+- to: to which node (word) the link goes - **word2**
+- weight: smth (ratio) that looks like "wight"
+
+But the last one "weight" doesn't represent the weight of the link (of the relationship between two words in bigram). This is coefficient obtained by comparing two text corps and it shows which bigrams are more frequent for focus corpus than for reference one. For example, if we create graph visualization based on this metric, we will get that words' relationship in bi-gram "district hospital" (victory status) is very small (0.07), but actually this	bi-gram is one of the most frequent bi-grams in this corpus (n = 13).
+
+So, we will lose all significant weight for bi-grams in "victory" petition status, because this is the aim of metric - to show which words/bi-grams are more frequent in the focus corpus.
+
+If our goal was to visualize the most likely bigrams for the focus corps, this metric, I think, could fit. But if we want to see the significance of bigrams and words' connections for each of the corpora separately, it is better to use the frequency or the normalized frequency, in my opinion.
+
+**6.4. Create a bigram graph on a frequency of bigrams**
+
+**6.5. Explain the usefulness of graphs as a visualization method**
+
+Network visualization makes it possible to visually analyze the relationship between subjects or objects, relationship direction, density, as well as highlight clusters, the largest nodes in proximity (in our case, words) etc.
+
+**6.6. Explain what you got as a result, what you can say about the text based on the visualization**
+
+We got two graphs - one for "active" petition status and one for "victory". The strength of the words' relationship in bi-grams is reflected by the saturation of the arrows (black color - strong relationship, and then, the lighter, the less strong the relationship). We can see that the strongest relationship is between "mental" and "health", "canara" and "bank" for "active" graph. And for "victory" graph the strongest relationship is between "stray" and "dog", "board" and "exam". In general, we already know up to this stage that these bigrams are the most frequent for each of the corpora.
+
+From the new - graphs allow us to see the clusters:
+
+- for "active" petition status: cluster related to health, it is formed by the following words: mental, health, illness, curriculum; and cluster formed by such words as "strong", "women", "sigh", "petition" and one more cluster.
+
+- for "victory" petition status: similar to the last "active" cluster - cluster formed by "sign", "strong", "nofollow", "petition"; cluster related to exams: "board", "exam", "entrance"; cluster connected with acid attack: "acid", "attack", "survivor" and two more clusters. 
+
+In this way, the topics of petitions, for example, related to health, which are in active status, are traced. Or petitions related to exams and online classes that have received the status of "victory".
+
+```{r}
+# Graph for "active" petition status
+
+bigrams_graph_active <- bigram_lemma %>%
+   filter(petition_status == "active")%>%
+   separate(bigram, c("word1", "word2"), sep = " ") %>%
+   group_by(word1, word2)%>%
+   summarize(n = n())%>% 
+   filter(n > 5)
+
+# turn data to graph
+bigrams_graph_1 <- graph_from_data_frame(bigrams_graph_active)
+
+
+a <- grid::arrow(type = "closed", length = unit(.12, "inches"))
+ggraph(bigrams_graph_1, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a) +
+  geom_node_point(color = "#6DD19A", size = 3) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  ggtitle("Petition status: ACTIVE")+
+  theme_void()
+```
+
+
+```{r}
+# Graph for "victory" petition status
+
+bigrams_graph_victory <- bigram_lemma %>%
+   filter(petition_status == "victory")%>%
+   separate(bigram, c("word1", "word2"), sep = " ") %>%
+   group_by(word1, word2)%>%
+   summarize(n = n())%>% 
+   filter(n > 5)
+
+# turn data to graph
+bigrams_graph_1 <- graph_from_data_frame(bigrams_graph_victory)
+
+
+a <- grid::arrow(type = "closed", length = unit(.12, "inches"))
+ggraph(bigrams_graph_1, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a) +
+  geom_node_point(color = "#6FACD1", size = 3) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  ggtitle("Petition status: VICTORY")+
+  theme_void()
+```
+
+
+**7. Coocurences and their visualization**
+
+**7.1. make the coocurences grouped by sentence** 
+
+Notes: 
+- do not clean the dataset from punctuation so that udpipe can display the number of sentences in the document
+- WARNING in our case udpipe may not divide text into paragraphs - it's OK, so still use group = c("doc_id", "paragraph_id", "sentence_id") even if the udpipe fail to do it)
+
+Since we need to keep the punctuation, let's take the raw bigram dataset and clean it up again as required.
+
+```{r}
+bigram_cleaned <- bigrams_raw %>% 
+  separate(bigram, c("word1", "word2"), sep = " ")
+
+bigram_cleaned <- subset(bigram_cleaned, str_length(word1)>3 & str_length(word2)>3)
+bigram_cleaned <- subset(bigram_cleaned, word1 != "https" & word2 != "https")
+bigram_cleaned <- subset(bigram_cleaned, word1 != "http" & word2 != "http")
+
+bigram_cleaned <-  bigram_cleaned %>%               
+  filter(
+    !word1 %in% stop_words$word,                 # remove stopwords from both words in bi-gram
+    !word2 %in% stop_words$word,
+    !str_detect(word1, pattern = "[[:digit:]]"), # remove any words with numeric digits
+    !str_detect(word2, pattern = "[[:digit:]]"),
+    !str_detect(word1, pattern = "(.)\\1{2,}"),  # remove any words with 3 or more repeated letters
+    !str_detect(word2, pattern = "(.)\\1{2,}"),
+    !str_detect(word1, pattern = "\\b(.)\\b"),   # remove any remaining single letter words
+    !str_detect(word1, pattern = "\\b(.)\\b")
+    ) %>%
+  unite("bigram", c(word1, word2), sep = " ")
+
+
+bigram_cleaned_active <- bigram_cleaned[bigram_cleaned$petition_status == "active", ]
+bigram_cleaned_victory <- bigram_cleaned[bigram_cleaned$petition_status == "victory", ]
+```
+
+Also an important point with lemmatizations, since we need parts of speech, let's also do lemmatization with udpipe.
+
+```{r, warning = F, message = FALSE}
+library(udpipe)
+enmodel <- udpipe_download_model(language = "english")
+udmodel <- udpipe_load_model(file = "english-ewt-ud-2.5-191206.udpipe")
+bigram_lemma_active <- udpipe_annotate(udmodel, 
+                     x = bigram_cleaned_active$bigram)
+bigram_lemma_active <- as.data.frame(bigram_lemma_active)
+bigram_lemma_active$petition_status <- "active"
+
+bigram_lemma_victory <- udpipe_annotate(udmodel, 
+                     x = bigram_cleaned_victory$bigram)
+bigram_lemma_victory <- as.data.frame(bigram_lemma_victory)
+bigram_lemma_victory$petition_status <- "victory"
+
+bigram_lemma_full <- rbind(bigram_lemma_active, bigram_lemma_victory)
+```
+
+**7.2. visualize the coocurences grouped by sentence**
+
+Taking into account that cooccurrence is an above-chance frequency of occurrence of two terms (also known as coincidence or concurrence) from a text corpus alongside each other in a certain order.
+
+So, such words as "mental" and "health", "canara" and "bank", "steel" and "plant" have the highest above-chance frequency of occurrence alongside each other within each sentence in "active" petition status corpus.
+
+And for "victory" petition status the following words have the highest above-chance frequency of occurrence alongside each other within each sentence: "stray" and "dog", "exams" and "board", "hospital" and "district".
+
+In general, these words form the most frequent bigrams in each of the text corpora as well.
+
+For "active" petition status.
+
+```{r}
+cooc <- cooccurrence(x = subset(bigram_lemma_active, upos %in% c("NOUN", "ADJ")), 
+                     term = "lemma", 
+                     group = c("doc_id", "paragraph_id", "sentence_id"))
+
+net <- head(cooc, 20)
+net <- graph_from_data_frame(net)
+ggraph(net, layout = "fr") +
+  geom_edge_link(aes(width = cooc, edge_alpha = cooc), edge_colour = "pink") +
+  geom_node_text(aes(label = name), col = "darkgreen", size = 4) +
+  theme_graph(base_family = "Arial Narrow") +
+  theme(legend.position = "none") +
+  labs(title = "Cooccurrences within sentence (status: active)", subtitle = "Nouns & Adjective")
+```
+
+For "victory" petition status. 
+
+```{r}
+cooc <- cooccurrence(x = subset(bigram_lemma_victory, upos %in% c("NOUN", "ADJ")), 
+                     term = "lemma", 
+                     group = c("doc_id", "paragraph_id", "sentence_id"))
+
+net <- head(cooc, 20)
+net <- graph_from_data_frame(net)
+ggraph(net, layout = "fr") +
+  geom_edge_link(aes(width = cooc, edge_alpha = cooc), edge_colour = "pink") +
+  geom_node_text(aes(label = name), col = "#191970", size = 4) +
+  theme_graph(base_family = "Arial Narrow") +
+  theme(legend.position = "none") +
+  labs(title = "Cooccurrences within sentence (status: victory)", subtitle = "Nouns & Adjective")
+```
+
+
+**7.3. make coocurence words following one another (skipgram = 1)**
+**7.4. visualize the coocurences words following one another**
+
+Here we are counting word co-occurrences of words which are following one another. And we can see groups of words that form a cluster, as they follow each other with a certain frequency in the text. For instance, for "active" petition status: "health", "mental", "strong", "women", "illness"; or for "victory" petition status: "priyanka", "reddy", "strong", "survivor", "attack", "acid". In both cases "strong" looks like some connecting word or a word that is used with many other words.
+
+
+For "active" petition status.
+```{r}
+cooc <- cooccurrence(bigram_lemma_active$lemma, 
+                     relevant = bigram_lemma_active$upos %in% c("NOUN", "ADJ"), 
+                     skipgram = 1)
+
+net <- head(cooc, 30)
+net <- graph_from_data_frame(net)
+ggraph(net, layout = "fr") +
+  geom_edge_link(aes(width = cooc, edge_alpha = cooc)) +
+  geom_node_text(aes(label = name), col = "darkgreen", size = 4) +
+  theme_graph(base_family = "Arial Narrow") +
+  labs(title = "Words following one another (status: active)", subtitle = "Nouns & Adjective")
+```
+
+For "victory" petition status.
+
+```{r}
+cooc <- cooccurrence(bigram_lemma_victory$lemma, 
+                     relevant = bigram_lemma_victory$upos %in% c("NOUN", "ADJ"), 
+                     skipgram = 1)
+
+net <- head(cooc, 30)
+net <- graph_from_data_frame(net)
+ggraph(net, layout = "fr") +
+  geom_edge_link(aes(width = cooc, edge_alpha = cooc)) +
+  geom_node_text(aes(label = name), col = "#483D8B", size = 4) +
+  theme_graph(base_family = "Arial Narrow") +
+  labs(title = "Words following one another (status: victory)", subtitle = "Nouns & Adjective")
+```
+
+**7.5. make coocurence words in a neighborhood (ex. skipgram = 3)**
+**7.6. visualize the coocurences words in a neighborhood**
+
+Here we are counting word co-occurrences of words which are close in the neighborhood of one another. 
+In general, we get similar results, we see that the word "strong" is used often in the neighborhood of many words both for the active corpus and for victory one. And the words already familiar to us have the greatest chances for a neighborhood connection between each other (for instance, "mental" & "health", or "stray" & "dog").
+
+For "active" petition status.
+```{r}
+cooc <- cooccurrence(bigram_lemma_active$lemma, 
+                     relevant = bigram_lemma_active$upos %in% c("NOUN", "ADJ"), 
+                     skipgram = 3)
+
+net <- head(cooc, 30)
+net <- graph_from_data_frame(net)
+ggraph(net, layout = "kk") +
+  geom_edge_link(aes(width = cooc, edge_alpha = cooc)) +
+  geom_node_text(aes(label = name), col = "darkgreen", size = 4) +
+  theme_graph(base_family = "Arial Narrow") +
+  labs(title = "Words in a neighborhood (status: active)", subtitle = "Nouns & Adjective")
+```
+
+For "victory" petition status.
+```{r}
+cooc <- cooccurrence(bigram_lemma_victory$lemma, relevant = bigram_lemma_victory$upos %in% c("NOUN", "ADJ"), skipgram = 3)
+
+net <- head(cooc, 30)
+net <- graph_from_data_frame(net)
+ggraph(net, layout = "kk") +
+  geom_edge_link(aes(width = cooc, edge_alpha = cooc)) +
+  geom_node_text(aes(label = name), col = "#483D8B", size = 4) +
+  theme_graph(base_family = "Arial Narrow") +
+  labs(title = "Words in a neighborhood (status: victory)", subtitle = "Nouns & Adjective")
+```
+
+**7.7) Explain the usefulness of coocurences as a method for exploring dataset**
+
+Co-occurrence shows which words occur together significantly more frequently than would be expected by chance. So, it can be interpreted as an indicator of semantic proximity or an idiomatic expression. It allows us to work out typical collocations for lexical items. It also makes it possible to identify some significant words that are used in different phrases.
+
+**7.8) Explain what you got as a result, what you can say about the text based on the visualization**
+
+As a result, we get graphs for each of the statuses, showing which words occur together significantly more frequently than would be expected by chance. We see that the most frequent bigrams are formed by those words that do not stand together by chance and their connection is really important and meaningful.
+
+Petition or petitions that are related to mental health, canara bank, strong women, board exams are meaningful in terms of active petition status. While petitions connected with stray dogs, district hospital, board exams, acid attack most likely were approved and received the status "victory". 
+
+
+**8. Rake:**
+
+**8.1. Calculate it**
+**8.2. Visualize it**
+
+
+For "active" petition status keywords (key bi-grams) are "canara bank", "steel plant", "vizag steel", "yoga teacher" etc.
+```{r}
+stats <- keywords_rake(x = bigram_lemma_active, term = "lemma", group = "doc_id", 
+                       relevant = bigram_lemma_active$upos %in% c("NOUN", "VERB"))
+stats$key <- factor(stats$keyword, levels = rev(stats$keyword))
+library(lattice)
+barchart(key ~ rake, data = head(subset(stats, freq > 5), 20), col = "darkgreen", 
+         main = "Keywords identified by RAKE (status: active)", 
+         xlab = "Rake")
+```
+
+For "victory" petition status keywords (key bi-grams) are "target_blank", "zoos_and_aquarium horii", "priyanka reddy", "treunat machine" etc. Here we get unfamiliar words due to a change in date cleaning, we didn't remove the punctuation.
+```{r}
+stats <- keywords_rake(x = bigram_lemma_victory, term = "lemma", group = "doc_id", 
+                       relevant = bigram_lemma_victory$upos %in% c("NOUN", "VERB"))
+stats$key <- factor(stats$keyword, levels = rev(stats$keyword))
+library(lattice)
+barchart(key ~ rake, data = head(subset(stats, freq > 5), 20), col = "#483D8B", 
+         main = "Keywords identified by RAKE (status: victory)", 
+         xlab = "Rake")
+```
+
+**8.3. Explain the usefulness of RAKE as a method for exploring dataset**
+
+Since RAKE is a basic algorithm which tries to identify keywords in text, it helps us to focus on particular important words and bi-grams, it also allows us to compare the significance of keywords by comparing their RAKEs.
+
+**8.4. Explain what you got as a result, what you can say about the text based on the visualization**
+
+As a result, we get a horizontal barplot, where the values of RAKE are located on the x-axis and each bar corresponds to a keyword. We can notice that there is a difference in keywords between the texts of the petition statuses. But at the same time, some words have a high RAKE both for the active status of the petition and for "victory" one (for instance, "board exams", "student").
+
+
+
+**9. Compare the results obtained by different visualizations. Create a meaningful conclusion**
+
+**9.1. Meaningful conclusion: state the fact (what you see on visualization)**
+
+Depending on the purpose of the visualization and its type, we can see the frequency of certain words, bigrams, identify which of them are key and which have a slightly lower value in the text. In addition, we can see the relationship of words, identify clusters of words that are most often used together, evaluate the strength of the connection of these words in bigram, grouping them by sentences, paragraphs or entire documents.
+
+**9.1. Meaningful conclusion: state the difference between the results obtained by visualizations**
+
+- The word cloud made it possible to see the main significant words (unigrams) and compare them in importance between corpora.
+
+- The network view made it possible to see the presence of clusters of words that, hypothetically, could form a specific topic in the general pool of petitions for each of petition status.In addition, the graphs made it possible to assess the strength of the connection of words within bigrams, to see which words are most often involved in the formation of meaningful bigrams in the text.
+
+-Horizontal barplot based on RAKE allowed to rank the keywords for each of the text corpora.
+
+**9.2. for advanced: state the difference for subsets on each visualization result**
+
+- The word cloud showed that each subset has its own most significant unigrams (like "hospital", "word" for active status and "online", "situation" for "victory" status), as well as unigrams that are often found in both corpora (there are many such unigrams, for instance, "women", "government", "people", "student"). This indicates the intersection of vocabulary, and hypothetically, the topics of petitions of different status.
+
+- Networks show difference in word usage with each other for different petition statuses. For example, the popular word "strong" in both corpora is used with different words in different corpora (with "health", "women", "mental", "india" for "active" status and with "survivor", "sign", "petition", "worker", "virus" for "victory" status). This suggests that if some vocabulary or some word is widely used in both corpora, this does not necessarily mean that the corpora are similar, because the word is used in different contexts. In general, the network also shows important word relationships that form significant bigrams, and the results here are about the same as the results of other visualization methods.
+
+- The horizontal barplot with RAKE also shows that there are common keywords between the corpuses of two statuses ("board exams" for instance), but there are also specific keywords that are unique for each of the corpora (like "canara bank" for active status and "attack survivor" for "victory" status). So, this again indicates the intersection of key vocabulary, and hypothetically, the topics of petitions of different status.
+
+In general, the intersection of unigrams, bigrams, keywords will allow us to put forward a hypothesis that a number of petitions that had been in the "active" status were approved and received the "victory" status. Of course, this is only a hypothesis, in order to confirm or refute it, other data are required.
+
